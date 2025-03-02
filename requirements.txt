@@ -1,0 +1,16 @@
+openai-whisper 
+ffmpeg-python
+langchain
+python-dotenv
+streamlit
+wget
+validators==0.28.1
+langchain-groq
+nltk
+ffmpeg
+beautifulsoup4
+opencv-python 
+moviepy
+selenium
+webdriver-manager
+deep-translator
