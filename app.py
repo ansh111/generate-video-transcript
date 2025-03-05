@@ -16,7 +16,7 @@ output_transcript_file_path = "transcript.txt"
 def load_whisper_model():
     return whisper.load_model("medium")
 
-# initilaise it only once 
+# initilaise it only once at the start 
 model = load_whisper_model()
     
 async def async_download_m3u8(m3u8_url):
