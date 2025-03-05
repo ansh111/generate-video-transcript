@@ -5,8 +5,21 @@ import whisper
 import asyncio
 import time
 from deep_translator import GoogleTranslator
+import requests
+from urllib.parse import urlparse, parse_qs
 
-async def async_download_m3u8(m3u8_url, output_path="output.mp3"):
+output_path = "output.mp3"
+output_transcript_file_path = "transcript.txt"
+
+# Load the Whisper model only once
+@st.cache_resource
+def load_whisper_model():
+    return whisper.load_model("medium")
+
+# initilaise it only once 
+model = load_whisper_model()
+    
+async def async_download_m3u8(m3u8_url):
     """Downloads and converts an .m3u8 stream to .mp3 using ffmpeg asynchronously."""
     process = await asyncio.create_subprocess_exec(
         "ffmpeg",
@@ -33,31 +46,41 @@ st.title("Transcribe Any Video")
 # User Input
 m3u8_url = st.text_input("Enter URL", "")
 
+def format_timestamp(seconds):
+    millis = int((seconds % 1) * 1000)
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+    return f"{minutes:02}:{seconds:02}.{millis:03}"
+
+# Read the transcript file
+def read_transcript(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        return file.read()
+    
 if st.button("Generate Transcript"):
     if m3u8_url:
-        st.write("Downloading Audio...")
+        with st.status("Downloading Audio...", expanded=True) as status:
+            result = asyncio.run(async_download_m3u8(m3u8_url))
+            status.update(label="Audio Downloaded", state="complete")
 
-        # Convert the .m3u8 stream to .mp4
-        output_file = "converted_audio.mp3"
-        start_time = time.perf_counter()
-    # result = download_m3u8(m3u8_url,output_file)
-        result = asyncio.run(async_download_m3u8(m3u8_url))
-        end_time = time.perf_counter()
-    
-        execution_time = end_time - start_time
-        print(f"Execution time: {execution_time:.6f} seconds")
+        with st.status("Generating Transcript...", expanded=True) as status:
+           result = model.transcribe(output_path, verbose=True)
+           status.update(label="Transcript Generated",state="complete")
 
-        model = whisper.load_model("medium")
-        st.write("Generating Transcript...")
-        result = model.transcribe(output_file, verbose=True)
+        with open(output_transcript_file_path, "w", encoding="utf-8") as file:
+            for segment in result["segments"]:
+                start_time = format_timestamp(segment["start"])
+                end_time = format_timestamp(segment["end"])
+                text = segment["text"].strip()
+                subtitle_line = f"[{start_time} --> {end_time}]  {text}\n"
+                file.write(subtitle_line)
         
-        st.subheader("Extracted Transcript")
-        with open("transcript.txt", "w", encoding="utf-8") as file:
-            file.write(result["text"])
-        st.write(result["text"])
+        with st.status("Showing Transcript", expanded=True) as status:
+            st.text_area("Transcript", read_transcript(output_transcript_file_path), height= 500)
+            status.update(label="Transcript Displayed",state="complete")
+
     else:
         st.error("Please enter url")    
-
 
 def split_text(text,max_length=4000):
     """Splits text into smaller chunks of max_length characters."""
@@ -73,20 +96,23 @@ def translate_to_english(file_path, source_lang="auto"):
     :return: Translated text in English.
     """
     # Read text from the file
-    with open(file_path, "r", encoding="utf-8") as file:
-        text = file.read()
+    text = read_transcript(file_path) 
     text_chunks = split_text(text)
 
-    
-    # Translate text to English
-    translator = GoogleTranslator(source=source_lang, target="en")
-    translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
-    print(translated_chunks)
-    transated_text  = " ".join(translated_chunks)
-    return transated_text
+    with st.status("Translating in English", expanded = True) as status:
+        translator = GoogleTranslator(source=source_lang, target="en")
+        translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
+        translated_text  = " ".join(translated_chunks)
+        st.text_area("English Translation", translated_text, height = 500)
+        status.update(label="Translated in English",state="complete")
+
+
 
 if st.button("Translate To English"):
-    st.write(translate_to_english("transcript.txt"))
+    translate_to_english(output_transcript_file_path)
+
+
+
 
 
 
