@@ -82,7 +82,7 @@ if st.button("Generate Transcript"):
     else:
         st.error("Please enter url")    
 
-def split_text(text,max_length=4000):
+def split_text(text,max_length= 4000):
     """Splits text into smaller chunks of max_length characters."""
     return [text[i:i+max_length] for i in range(0, len(text), max_length)]
 
