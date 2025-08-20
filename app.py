@@ -1,3 +1,4 @@
+from difflib import SequenceMatcher
 import streamlit as st
 import whisper
 import asyncio
@@ -82,19 +83,24 @@ def format_timestamp(seconds):
     seconds = int(seconds % 60)
     return f"{minutes:02}:{seconds:02}.{millis:03}"
 
+def _normalize_logprob(avg_logprob, min_lp=-6.0, max_lp=0.0):
+    clamped = max(min(avg_logprob, max_lp), min_lp)
+    return (clamped - min_lp) / (max_lp - min_lp)
+
 def compute_confidence(segment):
-    """Compute a confidence score from Whisper segment info."""
-    logprob_score = np.exp(segment["avg_logprob"])  # closer to 1 = better
-    silence_penalty = 1 - segment["no_speech_prob"]
-    confidence = max(0.0, min(1.0, logprob_score * silence_penalty))
-    return confidence
+    lp = segment.get("avg_logprob", -5.0)
+    lp_score = _normalize_logprob(lp, min_lp=-6.0, max_lp=0.0)
+    speech_factor = 1.0 - segment.get("no_speech_prob", 0.0)
+    conf = 0.8 * lp_score + 0.2 * speech_factor
+    return float(max(0.0, min(1.0, conf)))
 
 def compute_overall_confidence(result):
-    """Compute average confidence for the whole transcript."""
-    confidences = [compute_confidence(seg) for seg in result["segments"]]
-    if not confidences:  # safeguard for empty transcripts
+    segments = result.get("segments", [])
+    if not segments:
         return 0.0
-    return sum(confidences) / len(confidences)
+    total_duration = sum(max(0.001, seg["end"] - seg["start"]) for seg in segments)
+    weighted = sum(compute_confidence(seg) * max(0.001, seg["end"] - seg["start"]) for seg in segments)
+    return float(weighted / total_duration)
 
 def label_confidence(score: float) -> str:
     """Return a label for confidence value."""
@@ -120,6 +126,7 @@ if st.button("Generate Transcript"):
 
         with st.status("Generating Transcript...", expanded=True) as status:
            result = model.transcribe(output_path, verbose=True)
+          # st.session_state["transcript_result"] = result
         #    result = model.transcribe(output_path,
         #      temperature=0.0,    # deterministic
         #      beam_size=5,        # try 5–10 for stronger decoding
@@ -177,12 +184,39 @@ def translate_to_english(file_path, source_lang="auto"):
     text = read_transcript(file_path) 
     text_chunks = split_text(text)
 
+    def compute_translation_confidence(original_text: str, translated_text: str, source_lang="auto") -> float:
+        """
+        Estimates translation confidence by round-trip translation similarity.
+        """
+        try:
+            # Back translate English -> source
+            back_translator = GoogleTranslator(source="en", target=source_lang)
+            back_translated = back_translator.translate(translated_text)
+
+            # Compare original vs back-translated
+            similarity = SequenceMatcher(None, original_text, back_translated).ratio()
+
+            # Clamp between 0–1
+            return float(max(0.0, min(1.0, similarity)))
+        except Exception as e:
+            print(f"Translation confidence failed: {e}")
+            return 0.0
+
     with st.status("Translating in English", expanded = True) as status:
         try:
             translator = GoogleTranslator(source=source_lang, target="en")
             translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
             english_translated_text  = " ".join(translated_chunks)
             st.text_area("English Translation", english_translated_text, height = 500)
+            # Compute translation confidence (per chunk or overall)
+            confidence_scores = [
+                compute_translation_confidence(orig, trans, source_lang=source_lang)
+                for orig, trans in zip(text_chunks, translated_chunks)
+            ]
+            overall_conf = np.mean(confidence_scores) if confidence_scores else 0.0
+
+            st.write(f"🔹 **Translation Confidence:** {overall_conf:.2f} → {label_confidence(overall_conf)}")
+
             status.update(label="Translated in English",state="complete")
         except Exception as e:
             st.error(f"Translation failed: {str(e)}") 
@@ -192,6 +226,7 @@ def translate_to_english(file_path, source_lang="auto"):
 
 if st.button("Translate To English"):
     translate_to_english(output_transcript_file_path)
+
 
 llm=ChatGroq(groq_api_key=groq_api_key,model_name="llama3-70b-8192")
 
