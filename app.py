@@ -1,33 +1,63 @@
 import streamlit as st
-import subprocess
-import os
 import whisper
 import asyncio
-import time
 from deep_translator import GoogleTranslator
-import requests
-from urllib.parse import urlparse, parse_qs
+import nest_asyncio
+from langchain.schema import Document
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from dotenv import load_dotenv
+import os
+from langchain.chains import create_retrieval_chain
+import time
+import numpy as np
 
-output_path = "output.mp3"
+nest_asyncio.apply()
+
+load_dotenv()
+## load the GROQ API Key
+os.environ['GROQ_API_KEY']=os.getenv("GROQ_API_KEY")
+os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
+groq_api_key= os.environ['GROQ_API_KEY']
+
+output_path = "output.wav"
 output_transcript_file_path = "transcript.txt"
 
 # Load the Whisper model only once
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("medium")
+    return whisper.load_model("large-v3")
 
-# initilaise it only once at the start 
+# initilaise it only once 
 model = load_whisper_model()
     
-async def async_download_m3u8(m3u8_url):
+async def download_m3u8_audio_async(m3u8_url):
     """Downloads and converts an .m3u8 stream to .mp3 using ffmpeg asynchronously."""
+    # process = await asyncio.create_subprocess_exec(
+    #     "ffmpeg",
+    #     "-y", 
+    #     "-i", m3u8_url,
+    #     "-q:a", "0",
+    #     "-map", "a",
+    #     output_path,
+    #     stdout=asyncio.subprocess.PIPE,
+    #     stderr=asyncio.subprocess.PIPE
+    # )
+
     process = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-y", 
         "-i", m3u8_url,
-        "-q:a", "0",
-        "-map", "a",
-        output_path,
+        "-vn",                        # drop video
+        "-ar", "16000",               # resample to 16kHz
+        "-ac", "1",                   # mono
+        "-c:a", "pcm_s16le",          # uncompressed wav (better than mp3/aac)
+        "-af", "highpass=f=200, lowpass=f=3000, dynaudnorm",  # clean speech band + normalize
+        output_path,                  # should be .wav
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
@@ -52,6 +82,30 @@ def format_timestamp(seconds):
     seconds = int(seconds % 60)
     return f"{minutes:02}:{seconds:02}.{millis:03}"
 
+def compute_confidence(segment):
+    """Compute a confidence score from Whisper segment info."""
+    logprob_score = np.exp(segment["avg_logprob"])  # closer to 1 = better
+    silence_penalty = 1 - segment["no_speech_prob"]
+    confidence = max(0.0, min(1.0, logprob_score * silence_penalty))
+    return confidence
+
+def compute_overall_confidence(result):
+    """Compute average confidence for the whole transcript."""
+    confidences = [compute_confidence(seg) for seg in result["segments"]]
+    if not confidences:  # safeguard for empty transcripts
+        return 0.0
+    return sum(confidences) / len(confidences)
+
+def label_confidence(score: float) -> str:
+    """Return a label for confidence value."""
+    if score >= 0.70:
+        return "High ✅"
+    elif score >= 0.40:
+        return "Medium ⚠️"
+    else:
+        return "Low ❌"
+
+
 # Read the transcript file
 def read_transcript(file_path):
     with open(file_path, "r", encoding="utf-8") as file:
@@ -60,11 +114,19 @@ def read_transcript(file_path):
 if st.button("Generate Transcript"):
     if m3u8_url:
         with st.status("Downloading Audio...", expanded=True) as status:
-            result = asyncio.run(async_download_m3u8(m3u8_url))
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(download_m3u8_audio_async(m3u8_url))
             status.update(label="Audio Downloaded", state="complete")
 
         with st.status("Generating Transcript...", expanded=True) as status:
            result = model.transcribe(output_path, verbose=True)
+        #    result = model.transcribe(output_path,
+        #      temperature=0.0,    # deterministic
+        #      beam_size=5,        # try 5–10 for stronger decoding
+        #      best_of=5,          # pick best scoring transcription
+        #      patience=2,         # allow longer beam search
+        #      condition_on_previous_text=True,  # keep context between segments
+        #      verbose=True)
            status.update(label="Transcript Generated",state="complete")
 
         with open(output_transcript_file_path, "w", encoding="utf-8") as file:
@@ -72,21 +134,37 @@ if st.button("Generate Transcript"):
                 start_time = format_timestamp(segment["start"])
                 end_time = format_timestamp(segment["end"])
                 text = segment["text"].strip()
-                subtitle_line = f"[{start_time} --> {end_time}]  {text}\n"
-                file.write(subtitle_line)
+                confidence = compute_confidence(segment)
+
+                subtitle_line = (
+                    f"[{start_time} --> {end_time}]  {text}  "
+                    f"(Conf: {confidence:.2f})\n"
+                )
+                file.write(subtitle_line)        
         
         with st.status("Showing Transcript", expanded=True) as status:
             st.text_area("Transcript", read_transcript(output_transcript_file_path), height= 500)
             status.update(label="Transcript Displayed",state="complete")
 
+        with st.status("Overall Transcript Confidence", expanded=True) as status:
+            overall_confidence = compute_overall_confidence(result)
+            st.write(f"🔹 **Overall Transcript Confidence:** {overall_confidence:.2f} → {label_confidence(overall_confidence)}")
+            st.markdown("""
+            ### Legend:
+            - ✅ **High (≥ 0.70)** — Transcript is reliable
+            - ⚠️ **Medium (0.40 – 0.69)** — Some uncertainty, review suggested
+            - ❌ **Low (< 0.40)** — Transcript likely has many errors
+            """)
+            status.update(label="Overall Transcript Confidence",state="complete")
+
     else:
         st.error("Please enter url")    
 
-def split_text(text,max_length= 4000):
+def split_text(text,max_length=4000):
     """Splits text into smaller chunks of max_length characters."""
     return [text[i:i+max_length] for i in range(0, len(text), max_length)]
 
-
+english_translated_text = ""
 def translate_to_english(file_path, source_lang="auto"):
     """
     Reads text from a file and translates it into English using GoogleTranslator.
@@ -100,20 +178,75 @@ def translate_to_english(file_path, source_lang="auto"):
     text_chunks = split_text(text)
 
     with st.status("Translating in English", expanded = True) as status:
-        translator = GoogleTranslator(source=source_lang, target="en")
-        translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
-        translated_text  = " ".join(translated_chunks)
-        st.text_area("English Translation", translated_text, height = 500)
-        status.update(label="Translated in English",state="complete")
+        try:
+            translator = GoogleTranslator(source=source_lang, target="en")
+            translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
+            english_translated_text  = " ".join(translated_chunks)
+            st.text_area("English Translation", english_translated_text, height = 500)
+            status.update(label="Translated in English",state="complete")
+        except Exception as e:
+            st.error(f"Translation failed: {str(e)}") 
+            translated_text = None   
 
 
 
 if st.button("Translate To English"):
     translate_to_english(output_transcript_file_path)
 
+llm=ChatGroq(groq_api_key=groq_api_key,model_name="llama3-70b-8192")
 
+prompt=ChatPromptTemplate.from_template(
+    """
+    Answer the questions based on the provided context only.
+    Please provide the most accurate respone based on the question
+    <context>
+    {context}
+    <context>
+    Question:{input}
 
+    """
 
+)
+
+def generate_transcript_embeddings():
+     st.session_state.docs = [Document(page_content=english_translated_text)]
+     print(english_translated_text)
+     st.write(st.session_state.docs) ## Document Loading
+     st.session_state.text_splitter=RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=50)
+     st.session_state.final_documents=st.session_state.text_splitter.split_documents(st.session_state.docs[:50])
+     st.session_state.vectors=FAISS.from_documents(st.session_state.final_documents,st.session_state.embeddings)   
+
+def create_vector_embedding():
+    if "vectors" not in st.session_state:
+        st.session_state.vectors = []
+        st.session_state.embeddings=OpenAIEmbeddings()
+
+    generate_transcript_embeddings()
+
+if st.button("Add to Vector DB"):
+    create_vector_embedding()
+
+user_prompt=st.text_input("Enter your query from the research paper")
+
+if st.button("Answer"):
+    if user_prompt:
+        document_chain = create_stuff_documents_chain(llm,prompt)
+        retriever=st.session_state.vectors.as_retriever()
+        retrieval_chain=create_retrieval_chain(retriever,document_chain)
+        start=time.process_time()
+        response=retrieval_chain.invoke({'input':user_prompt})
+        print(f"Response time :{time.process_time()-start}")
+        final_response =  response['answer']
+        st.write(final_response)
+        transcript = ""
+
+    ## With a streamlit expander
+        with st.expander("Document similarity Search"):
+            for i,doc in enumerate(response['context']):
+                st.write(doc.page_content)
+                st.write('------------------------')
+    else:
+        st.write("please enter a question to get an answer")   
 
 
 
