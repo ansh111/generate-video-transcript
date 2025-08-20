@@ -4,5 +4,15 @@ langchain
 python-dotenv
 streamlit
 langchain-groq
-ffmpeg
+nltk
 deep-translator
+nest-asyncio
+openai
+langchain-groq
+langchain_huggingface
+faiss-cpu
+langchain_chroma
+langchain-text-splitters
+langchain-openai
+ipykernel
+langchain-community
