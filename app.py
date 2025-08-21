@@ -16,8 +16,10 @@ import os
 from langchain.chains import create_retrieval_chain
 import time
 import numpy as np
+import subprocess
 
 nest_asyncio.apply()
+
 
 load_dotenv()
 ## load the GROQ API Key
@@ -25,19 +27,21 @@ os.environ['GROQ_API_KEY']=os.getenv("GROQ_API_KEY")
 os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
 groq_api_key= os.environ['GROQ_API_KEY']
 
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 output_path = "output.wav"
 output_transcript_file_path = "transcript.txt"
 
 # Load the Whisper model only once
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("large-v3")
+    return whisper.load_model("medium")
 
 # initilaise it only once 
 model = load_whisper_model()
     
 async def download_m3u8_audio_async(m3u8_url):
-    """Downloads and converts an .m3u8 stream to .mp3 using ffmpeg asynchronously."""
+    """Downloads and converts an .m3u8 stream to .wav using ffmpeg asynchronously."""
     # process = await asyncio.create_subprocess_exec(
     #     "ffmpeg",
     #     "-y", 
@@ -171,7 +175,7 @@ def split_text(text,max_length=4000):
     """Splits text into smaller chunks of max_length characters."""
     return [text[i:i+max_length] for i in range(0, len(text), max_length)]
 
-english_translated_text = ""
+
 def translate_to_english(file_path, source_lang="auto"):
     """
     Reads text from a file and translates it into English using GoogleTranslator.
@@ -206,8 +210,8 @@ def translate_to_english(file_path, source_lang="auto"):
         try:
             translator = GoogleTranslator(source=source_lang, target="en")
             translated_chunks = [translator.translate(chunk) for chunk in text_chunks] 
-            english_translated_text  = " ".join(translated_chunks)
-            st.text_area("English Translation", english_translated_text, height = 500)
+            st.session_state.english_translated_text  = " ".join(translated_chunks)
+            st.text_area("English Translation", st.session_state.english_translated_text, height = 500)
             # Compute translation confidence (per chunk or overall)
             confidence_scores = [
                 compute_translation_confidence(orig, trans, source_lang=source_lang)
@@ -244,8 +248,7 @@ prompt=ChatPromptTemplate.from_template(
 )
 
 def generate_transcript_embeddings():
-     st.session_state.docs = [Document(page_content=english_translated_text)]
-     print(english_translated_text)
+     st.session_state.docs = [Document(page_content=st.session_state.english_translated_text)]
      st.write(st.session_state.docs) ## Document Loading
      st.session_state.text_splitter=RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=50)
      st.session_state.final_documents=st.session_state.text_splitter.split_documents(st.session_state.docs[:50])
@@ -255,6 +258,10 @@ def create_vector_embedding():
     if "vectors" not in st.session_state:
         st.session_state.vectors = []
         st.session_state.embeddings=OpenAIEmbeddings()
+
+    if not st.session_state.english_translated_text or not st.session_state.english_translated_text.strip():
+        st.error("⚠️ english_translated_text is empty. Cannot create embeddings.")
+        return    
 
     generate_transcript_embeddings()
 
@@ -282,6 +289,52 @@ if st.button("Answer"):
                 st.write('------------------------')
     else:
         st.write("please enter a question to get an answer")   
+
+# clip generstion code 
+def find_all_word_timestamps(result, target_word):
+    timestamps = []
+    for seg in result["segments"]:
+        for w in seg.get("words", []):
+            if target_word.lower() in w["word"].lower():
+                timestamps.append(w["start"])
+    return timestamps
+
+def generate_video_clip(start_time, m3u8_url, clip_file, duration=15):
+    """
+    Cuts a video clip from the original m3u8 video stream.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(start_time),   # start time in seconds
+        "-i", m3u8_url,           # input video
+        "-t", str(duration),      # duration
+        "-c", "copy",             # fast cut (might shift to nearest keyframe)
+        clip_file
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return clip_file   
+
+if st.button("Generate Video Clips from Word"):
+    target_word = st.text_input("Enter word to clip", "")
+    if target_word:
+        timestamps = find_all_word_timestamps(st.session_state.english_translated_text, target_word)
+        print(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
+        
+        if timestamps:
+            with st.status(f"Generating clips for '{target_word}'...", expanded=True):
+                st.success(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
+                
+                for i, ts in enumerate(timestamps, start=1):
+                    clip_file = f"clip_{target_word}_{i}.mp4"
+                    generate_video_clip(ts, m3u8_url, clip_file, duration=15)
+                    
+                    st.write(f"🎬 Clip {i} (from {ts:.2f}s → {ts+15:.2f}s)")
+                    st.video(clip_file)
+                status.update(label="Generated Clips",state="complete")    
+        else:
+            st.error(f"❌ Word '{target_word}' not found in transcript.")     
+
 
 
 
