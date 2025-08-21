@@ -35,7 +35,7 @@ output_transcript_file_path = "transcript.txt"
 # Load the Whisper model only once
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("medium")
+    return whisper.load_model("large-v3")
 
 # initilaise it only once 
 model = load_whisper_model()
@@ -80,6 +80,7 @@ st.title("Transcribe Any Video")
 
 # User Input
 m3u8_url = st.text_input("Enter URL", "")
+st.session_state.m3u8_url = m3u8_url
 
 def format_timestamp(seconds):
     millis = int((seconds % 1) * 1000)
@@ -129,15 +130,15 @@ if st.button("Generate Transcript"):
             status.update(label="Audio Downloaded", state="complete")
 
         with st.status("Generating Transcript...", expanded=True) as status:
-           result = model.transcribe(output_path, verbose=True)
-          # st.session_state["transcript_result"] = result
-        #    result = model.transcribe(output_path,
-        #      temperature=0.0,    # deterministic
-        #      beam_size=5,        # try 5–10 for stronger decoding
-        #      best_of=5,          # pick best scoring transcription
-        #      patience=2,         # allow longer beam search
-        #      condition_on_previous_text=True,  # keep context between segments
-        #      verbose=True)
+           result = model.transcribe(output_path, word_timestamps=True,verbose=True)
+           st.session_state.result = result
+           result_en = model.transcribe(
+                output_path, 
+                task="translate",       \
+                word_timestamps=True, 
+                verbose=True
+            )
+           st.session_state.result_en = result_en   # English transcript
            status.update(label="Transcript Generated",state="complete")
 
         with open(output_transcript_file_path, "w", encoding="utf-8") as file:
@@ -217,9 +218,9 @@ def translate_to_english(file_path, source_lang="auto"):
                 compute_translation_confidence(orig, trans, source_lang=source_lang)
                 for orig, trans in zip(text_chunks, translated_chunks)
             ]
-            overall_conf = np.mean(confidence_scores) if confidence_scores else 0.0
+           # overall_conf = np.mean(confidence_scores) if confidence_scores else 0.0
 
-            st.write(f"🔹 **Translation Confidence:** {overall_conf:.2f} → {label_confidence(overall_conf)}")
+           # st.write(f"🔹 **Translation Confidence:** {overall_conf:.2f} → {label_confidence(overall_conf)}")
 
             status.update(label="Translated in English",state="complete")
         except Exception as e:
@@ -268,7 +269,7 @@ def create_vector_embedding():
 if st.button("Add to Vector DB"):
     create_vector_embedding()
 
-user_prompt=st.text_input("Enter your query from the research paper")
+user_prompt=st.text_input("Enter your query from the transcript")
 
 if st.button("Answer"):
     if user_prompt:
@@ -313,27 +314,36 @@ def generate_video_clip(start_time, m3u8_url, clip_file, duration=15):
         clip_file
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return clip_file   
+    return clip_file 
+  
+target_word = st.text_input("Enter word to clip", "")
 
 if st.button("Generate Video Clips from Word"):
-    target_word = st.text_input("Enter word to clip", "")
-    if target_word:
-        timestamps = find_all_word_timestamps(st.session_state.english_translated_text, target_word)
-        print(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
-        
-        if timestamps:
-            with st.status(f"Generating clips for '{target_word}'...", expanded=True):
-                st.success(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
+
+    try:
+        with st.status(f"Generating clips for '{target_word}'...", expanded=True) as status:
+            if target_word and st.session_state.result_en:
+                timestamps = find_all_word_timestamps(
+                    st.session_state.result_en, target_word
+                )
+
+                print(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
                 
-                for i, ts in enumerate(timestamps, start=1):
-                    clip_file = f"clip_{target_word}_{i}.mp4"
-                    generate_video_clip(ts, m3u8_url, clip_file, duration=15)
+                if timestamps:
+                    st.success(f"Found {len(timestamps)} occurrence(s) of '{target_word}'")
                     
-                    st.write(f"🎬 Clip {i} (from {ts:.2f}s → {ts+15:.2f}s)")
-                    st.video(clip_file)
-                status.update(label="Generated Clips",state="complete")    
-        else:
-            st.error(f"❌ Word '{target_word}' not found in transcript.")     
+                    for i, ts in enumerate(timestamps, start=1):
+                        clip_file = f"clip_{target_word}_{i}.mp4"
+                        generate_video_clip(ts, st.session_state.m3u8_url, clip_file, duration=15)
+                        
+                        st.write(f"🎬 Clip {i} (from {ts:.2f}s → {ts+15:.2f}s)")
+                        st.video(clip_file)
+                else:
+                    st.error(f"❌ Word '{target_word}' not found in transcript.") 
+        status.update(label="Generated Clips", state="complete")
+
+    except Exception as e:
+        st.error(f"Error generating clips: {str(e)}")            
 
 
 
