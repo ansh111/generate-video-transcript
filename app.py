@@ -237,12 +237,12 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📥 Upload", "📝 Transcript", "🌍 
 with tab1:
     st.markdown("### Enter Video URL")
     m3u8_url = st.text_input("M3U8 Video URL", "")
-    st.session_state.m3u8_url = m3u8_url
     selected_lang = st.selectbox("Select Language", list(LANG_OPTIONS.keys()))
 
     if st.button("Generate Transcript"):
         if m3u8_url:
             with st.status("Downloading Audio...", expanded=True) as status:
+                st.session_state.m3u8_url = m3u8_url
                 loop = asyncio.get_event_loop()
                 result = loop.run_until_complete(download_m3u8_audio_async(m3u8_url))
                 status.update(label="Audio Downloaded", state="complete")
