@@ -25,9 +25,9 @@ nest_asyncio.apply()
 load_dotenv()
 
 # API keys
-os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
-os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
-groq_api_key = os.environ['GROQ_API_KEY']
+# os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
+# os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
+groq_api_key = os.getenv("GROQ_API_KEY")
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Language options (ISO 639-1 codes)
