@@ -328,7 +328,7 @@ with tab4:
 with tab5:
     st.markdown("### 🎬 Generate Clips")
 
-    if "result_en" not in st.session_state and os.path.exists(output_path) and "m3u8_url" in st.session_state:
+    if "result_en" not in st.session_state and os.path.exists(output_path) and "result" in st.session_state:
         with st.spinner("Building context to generate clips..."):
             audio_chunks = split_audio(output_path, chunk_length=60)  # e.g. 60 sec chunks
             progress_bar = st.progress(0)
