@@ -1,3 +1,4 @@
+import tempfile
 import streamlit as st
 import whisper
 import asyncio
@@ -17,6 +18,8 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
+from pydub import AudioSegment
+import soundfile as sf
 
 nest_asyncio.apply()
 load_dotenv()
@@ -26,6 +29,17 @@ os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
 os.environ['OPENAI_API_KEY'] = os.getenv("OPENAI_API_KEY")
 groq_api_key = os.environ['GROQ_API_KEY']
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# Language options (ISO 639-1 codes)
+LANG_OPTIONS = {
+    "Auto-detect": None,
+    "Spanish (es)": "es",
+    "Portuguese (pt)": "pt",
+    "Arabic (ar)": "ar",
+    "Turkish (tr)": "tr",
+    "Indonesian (id)": "id"
+}
+
 
 output_path = "output.wav"
 output_transcript_file_path = "transcript.txt"
@@ -95,6 +109,49 @@ def generate_video_clip(start_time, m3u8_url, clip_file, duration=15):
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return clip_file
+
+def split_audio(file_path, chunk_length=60):
+    """
+    Splits audio into chunks of given length (seconds).
+    Returns a list of temporary file paths.
+    """
+    audio = AudioSegment.from_file(file_path)
+    duration_ms = len(audio)
+    chunks = []
+
+    for i in range(0, duration_ms, chunk_length * 1000):
+        chunk = audio[i:i + chunk_length * 1000]
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        chunk.export(temp_file.name, format="wav")
+        chunks.append(temp_file.name)
+
+    return chunks
+
+def merge_results(results):
+    """
+    Merge Whisper transcription results (chunked).
+    """
+    merged = {"text": "", "segments": [], "language": None}
+    for r in results:
+        merged["text"] += r["text"] + " "
+        merged["segments"].extend(r["segments"])
+        if merged["language"] is None:
+            merged["language"] = r.get("language")
+    return merged
+
+def validate_audio(file_path: str):
+    """Check if audio exists and is valid before Whisper transcribe"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    if os.path.getsize(file_path) == 0:
+        raise ValueError("Audio file is empty (0 bytes).")
+
+    try:
+        f = sf.SoundFile(file_path)
+        if len(f) == 0:
+            raise ValueError("Audio file has no frames (empty).")
+    except Exception as e:
+        raise ValueError(f"Invalid audio file: {e}")
 
 # Read the transcript file
 def read_transcript(file_path, results):
@@ -181,6 +238,7 @@ with tab1:
     st.markdown("### Enter Video URL")
     m3u8_url = st.text_input("M3U8 Video URL", "")
     st.session_state.m3u8_url = m3u8_url
+    selected_lang = st.selectbox("Select Language", list(LANG_OPTIONS.keys()))
 
     if st.button("Generate Transcript"):
         if m3u8_url:
@@ -190,7 +248,8 @@ with tab1:
                 status.update(label="Audio Downloaded", state="complete")
 
             with st.status("Generating Transcript...", expanded=True) as status:
-                result = model.transcribe(output_path, verbose=True)
+                #validate_audio(output_path)  
+                result = model.transcribe(output_path, language= LANG_OPTIONS[selected_lang],verbose=True)
                 st.session_state.result = result
                 status.update(label="Transcript Generated",state="complete")
                
@@ -269,14 +328,27 @@ with tab4:
 with tab5:
     st.markdown("### 🎬 Generate Clips")
 
-    if "result_en" not in st.session_state and os.path.exists(output_path):
+    if "result_en" not in st.session_state and os.path.exists(output_path) and "m3u8_url" in st.session_state:
         with st.spinner("Building context to generate clips..."):
-            result_en = model.transcribe(
-                output_path,
-                task="translate",
-                word_timestamps=True,
-                verbose=True
-            )
+            audio_chunks = split_audio(output_path, chunk_length=60)  # e.g. 60 sec chunks
+            progress_bar = st.progress(0)
+            
+            all_results = []
+            for i, chunk in enumerate(audio_chunks):
+                result_chunk = model.transcribe(
+                    chunk,
+                    task="translate",
+                    word_timestamps=True,
+                    verbose=False
+                )
+                all_results.append(result_chunk)
+
+                # Update progress
+                progress = int((i+1) / len(audio_chunks) * 100)
+                progress_bar.progress(progress, text=f"Processing... {progress}%")
+
+            # Merge results
+            result_en = merge_results(all_results)
         st.session_state.result_en = result_en
 
     if "result_en" in st.session_state:

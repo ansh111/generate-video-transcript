@@ -16,3 +16,5 @@ langchain-text-splitters
 langchain-openai
 ipykernel
 langchain-community
+pydub
+soundfile
