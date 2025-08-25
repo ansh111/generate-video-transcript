@@ -115,9 +115,12 @@ def find_all_word_timestamps(result, target_word):
                 timestamps.append(w["start"])
     return timestamps
 
-def generate_video_clip(start_time, m3u8_url, clip_file, duration=15):
+def generate_video_clip(start_time, m3u8_url, clip_file, duration=15, offset=5):
+    # Ensure we don't go before 0
+    adjusted_start = max(0, start_time - offset)
+
     cmd = [
-        "ffmpeg", "-y", "-ss", str(start_time),
+        "ffmpeg", "-y", "-ss", str(adjusted_start),
         "-i", m3u8_url, "-t", str(duration),
         "-c", "copy", clip_file
     ]
