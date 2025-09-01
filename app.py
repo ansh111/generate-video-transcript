@@ -311,7 +311,11 @@ if model:
     with tab4:
         st.markdown("### 💬 Ask Questions")
         if "english_translated_text" in st.session_state:
-            llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-70b-8192")
+            llm = ChatGroq( groq_api_key=groq_api_key,
+                            model_name="llama-3.3-70b-versatile",
+                            # optional params you may want to configure:
+                            temperature=0.0,
+                            max_tokens=1024,)
             prompt = ChatPromptTemplate.from_template(
                 """
                 Answer the questions based on the provided context only.
