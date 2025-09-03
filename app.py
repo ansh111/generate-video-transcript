@@ -244,6 +244,43 @@ def translate_to_english(file_path, source_lang="auto"):
             st.error(f"Translation failed: {str(e)}") 
             translated_text = None   
 
+def safe_transcribe(model, audio_path, **kwargs):
+    """
+    Wrapper around Whisper's transcribe with safety checks:
+    - Ensures file exists and is not empty
+    - Ensures duration > 0
+    - Catches zero-length mel issues
+    """
+
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    if os.path.getsize(audio_path) == 0:
+        raise ValueError(f"Audio file {audio_path} is empty.")
+
+    try:
+        info = sf.info(audio_path)
+        duration = info.frames / info.samplerate
+        if duration <= 0:
+            raise ValueError(f"Audio file {audio_path} has zero duration.")
+    except RuntimeError:
+        raise ValueError(f"Cannot read audio metadata: {audio_path}")
+
+    # Run Whisper transcription
+    try:
+        result = model.transcribe(audio_path, **kwargs)
+    except RuntimeError as e:
+        if "cannot reshape tensor of 0 elements" in str(e):
+            raise ValueError(f"Whisper received empty audio features from {audio_path}. Check input.")
+        else:
+            raise
+
+    # Handle completely silent audio gracefully
+    if not result.get("text") or result["text"].strip() == "":
+        result["text"] = "[No speech detected]"
+
+    return result            
+
 if model:            
     # --- UI ---
     st.set_page_config(page_title="Transcript Analyzer", page_icon="🎙️", layout="wide")
@@ -257,23 +294,35 @@ if model:
         m3u8_url = st.text_input("M3U8 Video URL", "")
         selected_lang = st.selectbox("Select Language", list(LANG_OPTIONS.keys()))
 
-        if st.button("Generate Transcript"):
+        if st.button("Download Audio"):
             if m3u8_url:
                 with st.status("Downloading Audio...", expanded=True) as status:
                     st.session_state.m3u8_url = m3u8_url
                     loop = asyncio.get_event_loop()
                     result = loop.run_until_complete(download_m3u8_audio_async(m3u8_url))
-                    status.update(label="Audio Downloaded", state="complete")
+                    if result:
+                        status.update(label="Audio Downloaded", state="complete")
+                        st.success("Audio downloaded successfully!")
+                    else:
+                        status.update(label="Failed to download audio", state="error")
+                        st.error("Failed to download audio. Please check the URL.")
+            else:
+                st.error("Please enter a valid URL")
+
+        if st.button("Generate Transcript"):
+            if m3u8_url:
+                # with st.status("Downloading Audio...", expanded=True) as status:
+                #     st.session_state.m3u8_url = m3u8_url
+                #     loop = asyncio.get_event_loop()
+                #     result = loop.run_until_complete(download_m3u8_audio_async(m3u8_url))
+                #     status.update(label="Audio Downloaded", state="complete")
 
                 with st.status("Generating Transcript...", expanded=True) as status:
                     #validate_audio(output_path)  
-                    result = model.transcribe(output_path, language= LANG_OPTIONS[selected_lang],verbose=True)
+                    result = safe_transcribe(model= model, audio_path=output_path, language= LANG_OPTIONS[selected_lang],verbose=True)
+                    #result = model.transcribe(output_path, language= LANG_OPTIONS[selected_lang],verbose=True)
                     st.session_state.result = result
                     status.update(label="Transcript Generated",state="complete")
-                
-                # with st.spinner("Generating English Transcript..."):
-                #     result_en = model.transcribe(output_path, task="translate", word_timestamps=True, verbose=True)
-                #     st.session_state.result_en = result_en
 
                 st.success(" Transcripts generated!")
             else:
