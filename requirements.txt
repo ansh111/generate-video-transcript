@@ -18,3 +18,4 @@ ipykernel
 langchain-community
 pydub
 soundfile
+yt_dlp
