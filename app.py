@@ -20,6 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from pydub import AudioSegment
 import soundfile as sf
+import yt_dlp
 
 nest_asyncio.apply()
 load_dotenv()
@@ -279,7 +280,33 @@ def safe_transcribe(model, audio_path, **kwargs):
     if not result.get("text") or result["text"].strip() == "":
         result["text"] = "[No speech detected]"
 
-    return result            
+    return result   
+
+def download_youtube_wav(youtube_url: str, filename: str = "output") -> str:
+    """
+    Download YouTube audio directly as WAV and return the saved path.
+    """
+
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": filename,  # force final name
+        "quiet": True,
+        "noplaylist": True,  # avoid downloading full playlist accidentally
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "wav",   # directly to wav
+                "preferredquality": "192",
+            }
+        ],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([youtube_url])
+
+    return output_path
+         
 
 if model:            
     # --- UI ---
@@ -291,26 +318,31 @@ if model:
     # --- Upload Tab ---
     with tab1:
         st.markdown("### Enter Video URL")
-        m3u8_url = st.text_input("M3U8 Video URL", "")
+        url = st.text_input("M3U8 or Youtube Video URL", "")
         selected_lang = st.selectbox("Select Language", list(LANG_OPTIONS.keys()))
 
         if st.button("Download Audio"):
-            if m3u8_url:
+            if url:
                 with st.status("Downloading Audio...", expanded=True) as status:
-                    st.session_state.m3u8_url = m3u8_url
+                    st.session_state.m3u8_url = url
                     loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(download_m3u8_audio_async(m3u8_url))
+                    if "youtube.com" in url or "youtu.be" in url:
+                        result = download_youtube_wav(url)
+                        st.success("youtube download started")
+                    else:
+                        result = loop.run_until_complete(download_m3u8_audio_async(url))
                     if result:
                         status.update(label="Audio Downloaded", state="complete")
                         st.success("Audio downloaded successfully!")
                     else:
                         status.update(label="Failed to download audio", state="error")
                         st.error("Failed to download audio. Please check the URL.")
+                        
             else:
                 st.error("Please enter a valid URL")
 
         if st.button("Generate Transcript"):
-            if m3u8_url:
+            if url:
                 # with st.status("Downloading Audio...", expanded=True) as status:
                 #     st.session_state.m3u8_url = m3u8_url
                 #     loop = asyncio.get_event_loop()
