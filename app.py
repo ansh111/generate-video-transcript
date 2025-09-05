@@ -293,6 +293,7 @@ def download_youtube_wav(youtube_url: str, filename: str = "output") -> str:
         "outtmpl": filename,  # force final name
         "quiet": True,
         "noplaylist": True,  # avoid downloading full playlist accidentally
+        "cookiefile": "cookies.txt",
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
